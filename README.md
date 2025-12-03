@@ -113,6 +113,7 @@
 如果你想使用本地的 MP3 和 LRC 文件创建自定义课程，可以使用内置的本地 HTTP 服务器。
 
 ### 快速开始
++ 下载 [http_server.py](http_server.py) 与 [run_server.bat](run_server.bat)
 
 #### Windows 用户
 1. 将你的 MP3 和 LRC 文件放在项目目录下（或任意子文件夹）
