@@ -142,7 +142,9 @@
             abLoop: { a: null, b: null },
             hasTranslation: false
         };
+        audio.preload = 'auto';
         audio.src = mp3Src;
+        audio.load();
         bookImgEl.src = bookImgSrc;
         bookImgEl.alt = isCustomLesson ? (customBookDisplayName || customBookName) : defaultBookToken;
         
@@ -154,19 +156,36 @@
         let stalledCount = 0;
         let lastStalledTime = 0;
         
+        function enableAudioUi() {
+            content.style.pointerEvents = '';
+            content.style.opacity = '';
+        }
+
+        function markAudioReady(reason) {
+            if (audio.error || audio.readyState < 1) {
+                return;
+            }
+            if (!audioReady) {
+                console.log('[AUDIO] Marking audio ready via', reason, '- readyState:', audio.readyState);
+            }
+            audioReady = true;
+            enableAudioUi();
+        }
+
         audio.addEventListener('loadstart', () => console.log('[AUDIO] loadstart - readyState:', audio.readyState));
-        audio.addEventListener('loadedmetadata', () => console.log('[AUDIO] loadedmetadata - readyState:', audio.readyState, 'duration:', audio.duration));
-        audio.addEventListener('loadeddata', () => console.log('[AUDIO] loadeddata - readyState:', audio.readyState));
+        audio.addEventListener('loadedmetadata', () => {
+            console.log('[AUDIO] loadedmetadata - readyState:', audio.readyState, 'duration:', audio.duration);
+            markAudioReady('loadedmetadata');
+        });
+        audio.addEventListener('loadeddata', () => {
+            console.log('[AUDIO] loadeddata - readyState:', audio.readyState);
+            markAudioReady('loadeddata');
+        });
         let audioReady = false;
         audio.addEventListener('canplay', () => {
             console.log('[AUDIO] canplay - readyState:', audio.readyState);
             stalledCount = 0; // Reset stalled counter on successful load
-            if (audio.readyState >= 3) { // HAVE_FUTURE_DATA or better
-                audioReady = true;
-                // Enable UI
-                content.style.pointerEvents = '';
-                content.style.opacity = '';
-            }
+            markAudioReady('canplay');
         });
         audio.addEventListener('canplaythrough', () => console.log('[AUDIO] canplaythrough - readyState:', audio.readyState));
         audio.addEventListener('stalled', () => {
@@ -192,7 +211,10 @@
             }
             lastStalledTime = now;
         });
-        audio.addEventListener('suspend', () => console.warn('[AUDIO] suspend - readyState:', audio.readyState));
+        audio.addEventListener('suspend', () => {
+            console.warn('[AUDIO] suspend - readyState:', audio.readyState);
+            markAudioReady('suspend');
+        });
         audio.addEventListener('error', (e) => console.error('[AUDIO] Error loading:', audio.error, 'readyState:', audio.readyState));
 
         const displayModesContainer = document.getElementById('display-modes');
@@ -663,10 +685,11 @@
         const SEEK_DEBOUNCE_MS = 300; // 防抖间隔：300ms内的重复seek会被忽略（避免服务器过载）
         
         function playSegment(start, end) {
-            // Block if audio not ready yet
-            if (!audioReady) {
-                console.warn('[PLAY] Audio not ready, ignoring request');
-                return;
+            if (!audioReady && !audio.error) {
+                console.warn('[PLAY] Audio not marked ready yet, attempting playback anyway');
+                if (audio.networkState === audio.NETWORK_IDLE || audio.readyState === 0) {
+                    audio.load();
+                }
             }
             
             const now = Date.now();
@@ -731,47 +754,48 @@
                 return;
             }
             
-            // If audio is ready enough to play, play immediately
-            if (audio.readyState >= 2) {
-                console.log('[PLAY] Audio ready (readyState >= 2), playing now');
-                audio.play().catch(e => {
-                    console.error('[PLAY] Play failed:', e);
+            const tryPlay = label => {
+                console.log(`[PLAY] ${label} - readyState:`, audio.readyState);
+                audio.play().then(() => {
+                    markAudioReady(`play:${label}`);
+                }).catch(e => {
+                    console.error(`[PLAY] ${label} failed:`, e);
                 });
-            } else {
-                // Audio needs more data, wait for canplay
+            };
+
+            // Attempt playback immediately in the current user gesture for iOS.
+            tryPlay('Immediate play attempt');
+
+            if (audio.readyState < 2) {
                 console.log('[PLAY] Audio needs more data (readyState:', audio.readyState, '), waiting for canplay...');
-                
+
                 const onCanPlay = () => {
-                    console.log('[PLAY] canplay event fired, playing now');
+                    console.log('[PLAY] canplay event fired, retrying play');
                     if (pendingPlayRequest && pendingPlayRequest.handler === onCanPlay) {
+                        clearTimeout(pendingPlayRequest.timeout);
                         pendingPlayRequest = null;
                     }
-                    audio.play().catch(e => {
-                        console.error('[PLAY] Play failed after canplay:', e);
-                    });
+                    tryPlay('Play after canplay');
                 };
-                
+
                 const onError = () => {
                     console.error('[PLAY] Error event fired during wait');
                     if (pendingPlayRequest && pendingPlayRequest.errorHandler === onError) {
+                        clearTimeout(pendingPlayRequest.timeout);
                         pendingPlayRequest = null;
                     }
                 };
-                
-                // Set timeout in case canplay never fires
+
                 const timeout = setTimeout(() => {
                     console.error('[PLAY] Timeout waiting for canplay - readyState:', audio.readyState, 'networkState:', audio.networkState);
                     audio.removeEventListener('canplay', onCanPlay);
                     audio.removeEventListener('error', onError);
                     pendingPlayRequest = null;
-                    // Force play attempt even if not ready
-                    audio.play().catch(e => {
-                        console.error('[PLAY] Forced play after timeout also failed:', e);
-                    });
+                    tryPlay('Forced play after timeout');
                 }, 3000);
-                
+
                 pendingPlayRequest = { handler: onCanPlay, errorHandler: onError, timeout };
-                
+
                 audio.addEventListener('canplay', onCanPlay, { once: true });
                 audio.addEventListener('error', onError, { once: true });
             }
